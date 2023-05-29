@@ -16,6 +16,8 @@ The `wp-manager` script provides the following options:
 - `-a`: Add a new WordPress website.
 - `-r`: Remove a WordPress installation.
 - `-l`: List all available WordPress installations.
+- `-e`: Error log crawler for debugging a wordpress website. (Shows plugins that are in the error_log file for quick debugging)
+- `-n`: Error 500 resolver assuming it's caused by a plugin. (Test each plugin for an error to try and fix a 500 error caused by a plugin)
 - `--help`: Display help information.
 
 To report bugs, please visit the [issue tracker](https://github.com/Noam-Alum/wp-manager/issues).

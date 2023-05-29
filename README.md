@@ -4,7 +4,7 @@
 
 To install the `wp-manager` script, follow these steps:
 
-1. Download the script: ```wget "ncode.codes/wp-manager```
+1. Download the script: ```wget "ncode.codes/wp-manager"```
 2. Move the script to the /usr/local/bin/ directory: ```sudo mv wp-manager /usr/local/bin/```
 3. Make the wp-manager script executable: ```sudo chmod +x /usr/local/bin/wp-manager```
 4. Add an alias to the .bashrc file: ```sudo echo 'alias wp-manager="/usr/local/bin/./wp-manager"' >> ~/.bashrc```

@@ -1,13 +1,13 @@
 # wp-manager
 
 #installation
- install the script
+*install the script
 1. wget "ncode.codes/wp-manager"
- move to /usr/local/bin/
+*move to /usr/local/bin/
 2. sudo mv wp-manager /usr/local/bin/
- make wp-manager executable
+*make wp-manager executable
 3. sudo chmod +x /usr/local/bin/wp-manager
- add alias to bashrc
+*add alias to bashrc
 4. sudo echo 'alias wp-manager="/usr/local/bin/./wp-manager"' >> ~/.bashrc
 
 Usage: wp-manager [OPTION]

@@ -1,0 +1,372 @@
+#!/bin/bash
+
+#functions
+
+# command check
+
+function check {
+    if [ "$?" = 1 ]
+    then
+        echo -ne "\rGot an error while \"$STEPNAME\" was running."
+    else
+        echo -ne "\r[ Progress: $PROGRESSbar                             <- [$STEPNAME]                      "
+    fi
+}
+
+function addsite {
+
+# check for root usage
+if [ -z "$(id | grep root)" ]
+then
+    echo "RUN AS ROOT"
+    exit 1
+fi
+
+# get mysql root user && password
+read -p "Enter mysql root password: " dbrp
+
+while [ -z "$dbrp" ]
+do
+    read -p "Enter mysql root password: " dbrp
+done
+
+# check mysql root password
+mysqlcheck=$(mysql -u root -p"$dbrp" -e "show databases;" 2>&1)
+
+while [[ ! -z $(echo "$mysqlcheck" | grep "Access denied") ]]; do
+    read -p "MySQL root password incorrect, please try again: " dbrp
+    mysqlcheck=$(mysql -u root -p"$dbrp" -e "show databases;" 2>&1)
+done
+
+# vars
+    read -p "Domain name: " domainname 
+
+# get vars
+
+    while [ -z "$domainname" ]
+    do
+        read -p "No domain name inserted, please provide a domain name: " domainname
+    done
+
+    # username
+    userdomain="$(echo $domainname | tr -d "." | cut -c 1-10)"
+    websitepath="/home/$userdomain"
+
+    # password
+    upassword="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | fold -w 35 | head -n 1 | cut -c 1-14)"
+
+    # database username
+    dbuser="$(echo db_$userdomain)"
+
+    # database password
+    dbpass="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | fold -w 35 | head -n 1 | cut -c 1-14)"
+
+# create new user
+    STEPNAME="User creation"; PROGRESSbar="##                            ] - 5%"
+    useradd $userdomain
+    check
+    echo "$upassword"| passwd --stdin $userdomain > /dev/null
+    check
+
+# open directories
+cd /home/$userdomain
+mkdir logs
+mkdir public_html
+
+# install latest wordpress in given path
+    STEPNAME="Wordpress installation"; PROGRESSbar="#####                         ] - 15%"
+    cd $websitepath/public_html/
+    wget -q https://wordpress.org/latest.tar.gz
+    check
+    tar xzf latest.tar.gz
+    check
+    rm -rf latest.tar.gz
+    mv wordpress/* .
+    rmdir wordpress
+
+# configure wordpress
+    # change wp-config configuration
+    STEPNAME="WordPress configuration"; PROGRESSbar="########                      ] - 25%"
+    mv wp-config-sample.php wp-config.php
+    sed -i 's/database_name_here/'$dbuser'/g' wp-config.php
+    check
+    sed -i 's/username_here/'$dbuser'/g' wp-config.php
+    check
+    sed -i 's/password_here/'$dbpass'/g' wp-config.php
+    check
+    sed -i 's/wp_/'$userdomain'_/g' wp-config.php
+    check
+
+    # create .htaccess file
+    echo -e "# BEGIN WordPress
+
+    RewriteEngine On
+    RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+    RewriteBase /
+    RewriteRule ^index\.php$ - [L]
+    RewriteCond %{REQUEST_FILENAME} !-f
+    RewriteCond %{REQUEST_FILENAME} !-d
+    RewriteRule . /index.php [L]
+
+    # END WordPress" > .htaccess
+
+# open db
+    STEPNAME="Data base creation"; PROGRESSbar="############                  ] - 45%"
+    mysql -u root -p"$dbrp" -e "CREATE DATABASE $dbuser;CREATE USER $dbuser@localhost IDENTIFIED BY '$dbpass';GRANT ALL PRIVILEGES ON $dbuser.* TO $dbuser@localhost IDENTIFIED BY '$dbpass';FLUSH PRIVILEGES"
+    check
+
+# create vhost
+    #get last php-fpm port
+    lastport="$(cat /etc/php-fpm.d/*.conf | grep "listen =" | awk {'print $NF'} | tr -d '[:alpha:]' | tr -d '/' | tr -d '.' |  tr -d '-' | sed '/^$/d' | sort -n | tail -1)"
+    newport="$(( $lastport + 1 ))"
+
+    # create vhost file
+    echo -e "<VirtualHost *:80>
+    ServerName $domainname
+    ServerAlias www.$domainname
+    DocumentRoot $websitepath/public_html
+    ErrorLog $websitepath/logs/error.log
+    CustomLog $websitepath/logs/access.log combined 
+    <Directory $websitepath/public_html>
+    Options Indexes FollowSymLinks
+    AllowOverride All
+    Require all granted
+    DirectoryIndex index.php
+    </Directory>
+    #<FilesMatch \.php$>
+    # 2.4.10+ can proxy to unix socket
+    ProxyPassMatch ^/(.*\.php(/.*)?)$ fcgi://127.0.0.1:$newport$websitepath/public_html
+    RewriteEngine on
+    RewriteCond %{SERVER_NAME} =$domainname [OR]
+    RewriteCond %{SERVER_NAME} =www.$domainname
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+    </VirtualHost>
+
+    <VirtualHost *:443>
+    ServerName $domainname
+    ServerAlias www.$domainname
+    DocumentRoot $websitepath
+    ErrorLog $websitepath/logs/error.log
+    CustomLog $websitepath/logs/access.log combined 
+    <Directory $websitepath/public_html>
+    Options Indexes FollowSymLinks
+    AllowOverride All
+    Require all granted
+    DirectoryIndex index.php
+    </Directory>
+    #<FilesMatch \.php$>
+    # 2.4.10+ can proxy to unix socket
+    ProxyPassMatch ^/(.*\.php(/.*)?)$ fcgi://127.0.0.1:$newport$websitepath/public_html
+    RewriteEngine on
+    RewriteCond %{SERVER_NAME} =$domainname [OR]
+    RewriteCond %{SERVER_NAME} =www.$domainname
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+    </VirtualHost>
+    " > /etc/httpd/conf.d/$userdomain.conf
+
+# configure php-fpm
+    # create new config file
+    cp /etc/php-fpm.d/www.conf /etc/php-fpm.d/$userdomain.conf
+
+    # configure php-fpm config file
+    STEPNAME="php-fpm configuration"; PROGRESSbar="#######################       ] - 75%"
+    sed -i "s#/run/php-fpm/www.sock#$newport#g" /etc/php-fpm.d/$userdomain.conf
+    check
+    sed -i "s/user = apache/user = $userdomain/g" /etc/php-fpm.d/$userdomain.conf
+    check
+    sed -i "s/group = apache/group = $userdomain/g" /etc/php-fpm.d/$userdomain.conf
+    check
+    sed -i "s/\[www\]/[$userdomain]/g" /etc/php-fpm.d/$userdomain.conf
+    check
+
+# verifie premissions
+    cd /home/$userdomain/
+    find . -type f -exec chmod 644 {} \;
+    find . -type d -exec chmod 755 {} \;
+    chown -R $userdomain. *
+
+# restart services
+    STEPNAME="restart services"; PROGRESSbar="##############################] - 100%"
+    systemctl restart httpd php-fpm
+    check
+
+echo ""
+echo "domain: $domainname"
+echo "path: $websitepath/public_html"
+echo "username: $userdomain"
+echo "password: $upassword"
+echo "db user: $dbuser"
+echo "db password: $dbpass"
+}
+
+function removesite {
+
+# check for root usage
+if [ -z "$(id | grep root)" ]
+then
+    echo "RUN AS ROOT"
+    exit 1
+fi
+
+# get mysql root user && password
+read -p "Enter mysql root password: " dbrp
+
+while [ -z "$dbrp" ]
+do
+    read -p "Enter mysql root password: " dbrp
+done
+
+# check mysql root password
+mysqlcheck=$(mysql -u root -p"$dbrp" -e "show databases;" 2>&1)
+
+while [[ ! -z $(echo "$mysqlcheck" | grep "Access denied") ]]; do
+    read -p "MySQL root password incorrect, please try again: " dbrp
+    mysqlcheck=$(mysql -u root -p"$dbrp" -e "show databases;" 2>&1)
+done
+
+# vars
+    read -p "Domain name: " domainname 
+
+# get vars
+
+    while [ -z "$domainname" ]
+    do
+        read -p "No domain name inserted, please provide a domain name: " domainname
+    done
+
+    domcheck="$(cat /etc/httpd/conf.d/* | grep ServerName | awk {'print $2'} | grep $domainname)"
+
+    #check if domain exists
+    while [ -z "$domcheck" ]
+    do
+        read -p "Domian does not exist (try wp-manager -l to list all websites), please try again: " domainname
+        domcheck="$(cat /etc/httpd/conf.d/* | grep ServerName | awk {'print $2'} | grep $domainname)"
+    done
+
+    # username
+    userdomain="$(echo $domainname | tr -d "." | cut -c 1-10)"
+    websitepath="/home/$userdomain"
+
+    # database username
+    dbuser="$(echo db_$userdomain)"
+
+    # database password
+    dbpass="$(head -c 48 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | fold -w 35 | head -n 1 | cut -c 1-14)"
+
+# remove user
+    STEPNAME="User removal"; PROGRESSbar="##                            ] - 5%"
+    userdel -rf $userdomain 2> /dev/null
+    check
+ 
+# remove directories
+STEPNAME="Directories removal"; PROGRESSbar="########                      ] - 35%"
+cd /home
+rm -rf $userdomain
+
+# remove db
+    STEPNAME="Data base removal";PROGRESSbar="#######################       ] - 75%"
+    mysql -u root -p"$dbrp" -e "REVOKE ALL PRIVILEGES ON $dbuser.* FROM $dbuser@localhost; DROP USER $dbuser@localhost; DROP DATABASE $dbuser;"
+    check
+
+# remove vhost
+rm -rf /etc/httpd/conf.d/$userdomain.conf
+
+# remove php-fpm configuration
+rm -rf /etc/php-fpm.d/$userdomain.conf
+
+# restart services
+    STEPNAME="restart services"; PROGRESSbar="##############################] - 100%"
+    systemctl restart httpd php-fpm
+    check
+
+echo ""
+echo "WordPress installation on $domainname was removed successfully."
+
+}
+
+function siteinfo {
+# vars
+    read -p "Domain name: " domainname 
+
+# get vars
+
+    while [ -z "$domainname" ]
+    do
+        read -p "No domain name inserted, please provide a domain name: " domainname
+    done
+
+    domcheck="$(cat /etc/httpd/conf.d/* | grep ServerName | awk {'print $2'} | grep $domainname)"
+
+    #check if domain exists
+    while [ -z "$domcheck" ]
+    do
+        read -p "Domian does not exist (try wp-manager -l to list all websites), please try again: " domainname
+        domcheck="$(cat /etc/httpd/conf.d/* | grep ServerName | awk {'print $2'} | grep $domainname)"
+    done
+    # username
+    userdomain="$(echo $domainname | tr -d "." | cut -c 1-10)"
+    websitepath="/home/$userdomain"
+
+    # database username
+    dbuser="$(echo db_$userdomain)"
+
+echo "
+Domain: $domainname
+User: $userdomain
+Path: $websitepath/public_html/
+Database name: $dbuser
+Database user: $dbuser
+Database password: "$(cat $websitepath/public_html/wp-config.php | grep define | head -3 | tail -1 | awk {'print $3'} | tr -d "'")"
+Database table preflix: "$userdomain"_
+"
+
+}
+
+function help {
+    echo "Usage: wp-manager [OPTION]
+WordPress installations manager.
+
+options:
+    -a                  Add a new WordPress website.
+    -r                  Remove a WordPress installation.
+    -l                  List all available WordPress installation.
+    --help              Display this help and exit.
+
+Report bugs to: https://github.com/Noam-Alum/wp-manager/issues
+"
+}
+
+function listsites {
+    echo "$(cat /etc/httpd/conf.d/* | grep ServerName | awk {'print $2'} | uniq|cat -n)"
+}
+
+# Set flags
+while getopts "rail-:" opt; do
+    case $opt in
+        r)
+            removesite "$OPTARG"
+            ;;
+        a)
+            addsite "$OPTARG"
+            ;;
+        i)
+            siteinfo
+            ;;
+        l)  listsites
+            ;;
+        -)
+            case "${OPTARG}" in
+                help)
+                    help
+                    ;;
+                *)
+                    echo "Invalid option: --${OPTARG}"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        \?) 
+            exit 1
+            ;;
+    esac
+done
